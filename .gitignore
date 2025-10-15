@@ -11,4 +11,6 @@ wheels/
 .env
 uv.lock
 
+# Application data directories
 conversations/
+screenshots/

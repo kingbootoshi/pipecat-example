@@ -6,7 +6,11 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "pipecat-ai-small-webrtc-prebuilt>=1.0.0",
+    "pipecat-ai-whisker>=0.0.10",
     "pipecat-ai[assemblyai,elevenlabs,local,local-smart-turn-v3,openrouter]>=0.0.90",
     "python-dotenv>=1.1.1",
     "uvicorn>=0.37.0",
+    "mss>=10.0.0",
+    "pillow>=11.0.0",
+    "opencv-python>=4.10.0",
 ]
