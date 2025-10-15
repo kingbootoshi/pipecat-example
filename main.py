@@ -14,6 +14,10 @@ from datetime import datetime
 from dotenv import load_dotenv
 from loguru import logger
 
+from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
+from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import Frame, TranscriptionFrame, TextFrame, LLMFullResponseEndFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -22,6 +26,7 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.assemblyai.stt import AssemblyAISTTService
+from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.openrouter.llm import OpenRouterLLMService
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 
@@ -153,6 +158,12 @@ async def run_bot(transport: LocalAudioTransport):
         model="meta-llama/llama-3.3-70b-instruct",
     )
 
+    # Initialize ElevenLabs TTS service for audio output
+    tts = ElevenLabsTTSService(
+        api_key=os.getenv("ELEVENLABS_API_KEY"),
+        voice_id="FM4U7dtcVAjQuuSwraJ0",  # Specified voice ID
+    )
+
     # Create LLM context with system message
     messages = [
         {
@@ -172,15 +183,17 @@ async def run_bot(transport: LocalAudioTransport):
     transcription_logger = TranscriptionLogger()
     llm_response_logger = LLMResponseLogger()
 
-    # Create pipeline with proper context management
+    # Create pipeline with proper context management and TTS
     pipeline = Pipeline([
         transport.input(),              # Receives audio from microphone
         stt,                            # Converts audio to text
         transcription_logger,           # Logs the transcribed text
         context_aggregator.user(),      # Aggregates user context for LLM
         llm,                            # Processes text and generates AI response
-        llm_response_logger,            # Logs the AI response
-        context_aggregator.assistant(), # Aggregates assistant responses
+        tts,                            # Converts LLM text to speech
+        transport.output(),             # Sends audio to speakers
+        context_aggregator.assistant(), # Aggregates assistant responses (after output)
+        llm_response_logger,            # Logs the AI response (after aggregation)
     ])
 
     # Create pipeline task
@@ -202,7 +215,7 @@ async def run_bot(transport: LocalAudioTransport):
 
 
 async def main():
-    """Main entry point for conversational AI bot with local audio input."""
+    """Main entry point for conversational AI bot with local audio input and output."""
     # Check for required API keys
     if not os.getenv("ASSEMBLYAI_API_KEY"):
         logger.error("ASSEMBLYAI_API_KEY environment variable is required")
@@ -210,6 +223,10 @@ async def main():
     
     if not os.getenv("OPENROUTER_API_KEY"):
         logger.error("OPENROUTER_API_KEY environment variable is required")
+        return
+    
+    if not os.getenv("ELEVENLABS_API_KEY"):
+        logger.error("ELEVENLABS_API_KEY environment variable is required")
         return
 
     # Check if persistent conversation file exists
@@ -219,11 +236,13 @@ async def main():
     else:
         logger.info("No existing conversation. Starting fresh.")
 
-    # Create local audio transport with input enabled
+    # Create local audio transport with input and output enabled
     transport = LocalAudioTransport(
         LocalAudioTransportParams(
-            audio_in_enabled=True,   # Enable microphone input
-            audio_out_enabled=False, # Disable audio output for now
+            audio_in_enabled=True,                                        # Enable microphone input
+            audio_out_enabled=True,                                       # Enable speaker output
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),  # Voice activity detection
+            turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),  # Interruptible turn detection
         )
     )
 
