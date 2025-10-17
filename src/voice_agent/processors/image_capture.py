@@ -10,7 +10,7 @@ from pipecat.frames.frames import Frame, TranscriptionFrame
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from ..constants import SCREENSHOTS_DIR
+from ..constants import SCREENSHOTS_DIR, WEBCAM_MARKER
 from ..logging import logger
 
 
@@ -18,7 +18,7 @@ class ImageCaptureProcessor(FrameProcessor):
     def __init__(self, context: LLMContext):
         super().__init__()
         self._context = context
-        self._webcam_marker = "__webcam__"
+        self._webcam_marker = WEBCAM_MARKER
         self._webcam = None
         self._init_webcam()
 
@@ -57,18 +57,37 @@ class ImageCaptureProcessor(FrameProcessor):
             return None
 
     def _remove_old_images(self):
+        # Remove only prior webcam-only messages so we don't accidentally
+        # delete real user turns that may contain text.
+        def _is_webcam_only_message(msg: dict) -> bool:
+            if msg.get("role") != "user":
+                return False
+            content = msg.get("content")
+            if not isinstance(content, list):
+                return False
+            has_marker_text = False
+            for item in content:
+                if not isinstance(item, dict):
+                    return False
+                t = item.get("type")
+                if t == "text":
+                    text_val = str(item.get("text", ""))
+                    if text_val.startswith(self._webcam_marker):
+                        has_marker_text = True
+                    else:
+                        # Found non-marker user text -> not webcam-only
+                        return False
+                elif t == "image_url":
+                    # Allowed alongside marker text
+                    continue
+                else:
+                    # Unknown content type -> keep message
+                    return False
+            return has_marker_text
+
         if hasattr(self._context, "_messages"):
             self._context._messages = [
-                msg
-                for msg in self._context._messages
-                if not (
-                    isinstance(msg.get("content"), list)
-                    and any(
-                        item.get("text", "").startswith(self._webcam_marker)
-                        for item in msg.get("content", [])
-                        if isinstance(item, dict)
-                    )
-                )
+                msg for msg in self._context._messages if not _is_webcam_only_message(msg)
             ]
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -117,4 +136,3 @@ class ImageCaptureProcessor(FrameProcessor):
 
 
 __all__ = ["ImageCaptureProcessor"]
-

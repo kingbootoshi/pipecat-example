@@ -4,7 +4,7 @@ import json
 import os
 from typing import Any
 
-from ..constants import CONVERSATION_FILE, CONVERSATIONS_DIR
+from ..constants import CONVERSATION_FILE, CONVERSATIONS_DIR, WEBCAM_MARKER
 from ..logging import logger
 
 
@@ -17,6 +17,16 @@ def save_conversation(context: Any) -> str:
 
         filtered_messages = []
         for msg in messages:
+            # Drop any webcam marker messages entirely so we never persist
+            # screenshot placeholders in history.
+            if isinstance(msg.get("content"), list) and any(
+                isinstance(item, dict)
+                and item.get("type") == "text"
+                and str(item.get("text", "")).startswith(WEBCAM_MARKER)
+                for item in msg["content"]
+            ):
+                continue
+
             filtered_msg = msg.copy()
             if isinstance(msg.get("content"), list):
                 filtered_content = [
@@ -65,4 +75,3 @@ def load_conversation(context: Any) -> bool:
 
 
 __all__ = ["save_conversation", "load_conversation"]
-
