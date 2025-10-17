@@ -5,27 +5,23 @@
 #
 
 import asyncio
-import glob
 import json
 import os
 import sys
 from datetime import datetime
-from io import BytesIO
 
 import cv2
-import mss
+import yaml
 from dotenv import load_dotenv
 from loguru import logger
 from PIL import Image
 
-from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
-from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import Frame, TranscriptionFrame, TextFrame, LLMFullResponseEndFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineTask
+from pipecat.pipeline.task import PipelineTask, PipelineParams
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
@@ -33,12 +29,41 @@ from pipecat.services.assemblyai.stt import AssemblyAISTTService
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.openrouter.llm import OpenRouterLLMService
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
+# Import STT mute filter to prevent processing user input while bot is speaking
+from pipecat.processors.filters.stt_mute_filter import STTMuteConfig, STTMuteFilter, STTMuteStrategy
 from pipecat_whisker import WhiskerObserver
 
 load_dotenv(override=True)
 
 # Single persistent conversation file
 CONVERSATION_FILE = "./conversations/conversation.json"
+# Configuration file for system prompt and other settings
+CONFIG_FILE = "./config.yml"
+
+
+def load_config() -> dict:
+    """
+    Load configuration from config.yml file.
+    
+    Returns:
+        Dictionary containing configuration values
+        
+    Raises:
+        FileNotFoundError: If config.yml doesn't exist
+        yaml.YAMLError: If config.yml is not valid YAML
+    """
+    if not os.path.exists(CONFIG_FILE):
+        logger.error(f"Configuration file not found: {CONFIG_FILE}")
+        raise FileNotFoundError(f"Configuration file not found: {CONFIG_FILE}")
+    
+    try:
+        with open(CONFIG_FILE, "r") as file:
+            config = yaml.safe_load(file)
+            logger.info(f"Configuration loaded from {CONFIG_FILE}")
+            return config
+    except yaml.YAMLError as e:
+        logger.error(f"Failed to parse configuration file: {e}")
+        raise
 
 
 class TranscriptionLogger(FrameProcessor):
@@ -84,72 +109,20 @@ class LLMResponseLogger(FrameProcessor):
 
 class ImageCaptureProcessor(FrameProcessor):
     """
-    Captures both a screenshot and webcam image after each transcription and adds them to the LLM context.
-    Ensures only the most recent images exist in context by removing old ones before adding new ones.
-    This allows the LLM to see both the screen state and the user's webcam with each interaction.
+    Captures webcam image after each transcription and adds it to the LLM context.
+    Ensures only the most recent image exists in context by removing old ones before adding new ones.
+    This allows the LLM to see the user's webcam with each interaction.
+    
+    Note: Images are only kept in the runtime context and are NOT saved to conversation.json
+    (filtered out during save to keep file size manageable).
     """
     
     def __init__(self, context: LLMContext):
         super().__init__()
         self._context = context
-        self._screenshot_marker = "__screenshot__"  # Marker to identify screenshot messages
         self._webcam_marker = "__webcam__"  # Marker to identify webcam messages
         self._webcam = None  # Webcam capture object
         self._init_webcam()
-    
-    def _take_screenshot(self) -> tuple[bytes, tuple[int, int], str]:
-        """
-        Captures a screenshot of the primary monitor.
-        
-        Returns:
-            Tuple of (raw_image_bytes, (width, height), image_mode)
-            
-        Note: Returns RAW pixel bytes (not encoded), image mode (e.g. "RGB"),
-        as required by Pipecat's add_image_frame_message()
-        """
-        logger.debug("Starting screenshot capture...")
-        
-        with mss.mss() as sct:
-            # Capture the primary monitor
-            logger.debug(f"Available monitors: {sct.monitors}")
-            monitor = sct.monitors[1]
-            logger.debug(f"Capturing monitor: {monitor}")
-            
-            screenshot = sct.grab(monitor)
-            logger.debug(f"Screenshot captured: size={screenshot.size}, width={screenshot.width}, height={screenshot.height}")
-            
-            # Log available screenshot attributes to debug
-            logger.debug(f"Screenshot has bgra attr: {hasattr(screenshot, 'bgra')}")
-            logger.debug(f"Screenshot has rgb attr: {hasattr(screenshot, 'rgb')}")
-            logger.debug(f"Screenshot has rgba attr: {hasattr(screenshot, 'rgba')}")
-            
-            try:
-                # Convert to PIL Image (BGRA format on macOS/Windows)
-                logger.debug("Attempting BGRA conversion...")
-                img = Image.frombytes("RGBA", screenshot.size, screenshot.bgra, "raw", "BGRA")
-                logger.debug(f"BGRA conversion successful! Image mode: {img.mode}, size: {img.size}")
-                
-            except Exception as e:
-                logger.error(f"BGRA conversion failed: {e}")
-                logger.debug("Trying RGB conversion as fallback...")
-                try:
-                    img = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
-                    logger.debug(f"RGB conversion successful! Image mode: {img.mode}, size: {img.size}")
-                except Exception as e2:
-                    logger.error(f"RGB conversion also failed: {e2}")
-                    raise
-            
-            # Convert to RGB for better compatibility with LLMs
-            logger.debug(f"Converting to RGB... current mode: {img.mode}")
-            img = img.convert("RGB")
-            logger.debug(f"Converted to RGB mode: {img.mode}")
-            
-            # Return RAW pixel bytes (not encoded) - Pipecat will encode it
-            raw_bytes = img.tobytes()
-            logger.debug(f"Extracted raw pixel bytes: {len(raw_bytes)} bytes")
-            
-            # Return raw bytes, size, and PIL image mode (not file format!)
-            return raw_bytes, img.size, img.mode
     
     def _init_webcam(self):
         """
@@ -218,93 +191,73 @@ class ImageCaptureProcessor(FrameProcessor):
     
     def _remove_old_images(self):
         """
-        Removes any existing screenshot and webcam messages from the context.
-        This ensures we only keep the most recent images.
+        Removes any existing webcam messages from the context.
+        This ensures we only keep the most recent image.
         """
         # Access the internal messages list
         if hasattr(self._context, "_messages"):
-            # Filter out messages that contain our image markers
+            # Filter out messages that contain our webcam marker
             self._context._messages = [
                 msg for msg in self._context._messages
                 if not (isinstance(msg.get("content"), list) and 
-                       any(item.get("text", "").startswith((self._screenshot_marker, self._webcam_marker))
+                       any(item.get("text", "").startswith(self._webcam_marker)
                            for item in msg.get("content", []) if isinstance(item, dict)))
             ]
     
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         
-        # When we receive a transcription, capture both screenshot and webcam images
+        # When we receive a transcription, capture webcam image
         if isinstance(frame, TranscriptionFrame):
-            logger.info("📸🎥 Capturing screen and webcam for LLM context")
+            logger.info("🎥 Capturing webcam for LLM context")
             
             try:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 
-                # Take the screenshot (returns raw bytes, size, and PIL image mode)
-                screenshot_bytes, screenshot_size, screenshot_mode = self._take_screenshot()
-                logger.debug(f"Screenshot captured: bytes_len={len(screenshot_bytes)}, size={screenshot_size}, mode={screenshot_mode}")
-                
                 # Take a webcam photo (returns raw bytes, size, and PIL image mode, or None if unavailable)
                 webcam_result = self._take_webcam_photo()
-                if webcam_result:
-                    webcam_bytes, webcam_size, webcam_mode = webcam_result
-                    logger.debug(f"Webcam captured: bytes_len={len(webcam_bytes)}, size={webcam_size}, mode={webcam_mode}")
-                else:
-                    logger.warning("⚠️ Webcam capture skipped")
+                if not webcam_result:
+                    logger.warning("⚠️ Webcam capture failed, skipping image context")
+                    await self.push_frame(frame, direction)
+                    return
                 
-                # Save images locally for debugging
-                screenshot_dir = "./screenshots"
-                os.makedirs(screenshot_dir, exist_ok=True)
+                webcam_bytes, webcam_size, webcam_mode = webcam_result
+                logger.debug(f"Webcam captured: bytes_len={len(webcam_bytes)}, size={webcam_size}, mode={webcam_mode}")
+                
+                # Save webcam image locally for debugging
+                webcam_dir = "./screenshots"
+                os.makedirs(webcam_dir, exist_ok=True)
                 
                 try:
-                    # Save screenshot
-                    screenshot_path = os.path.join(screenshot_dir, f"screenshot_{timestamp}.png")
-                    debug_img = Image.frombytes(screenshot_mode, screenshot_size, screenshot_bytes)
-                    debug_img.save(screenshot_path)
-                    logger.debug(f"💾 Screenshot saved to: {screenshot_path}")
-                    
-                    # Save webcam image if available
-                    if webcam_result:
-                        webcam_path = os.path.join(screenshot_dir, f"webcam_{timestamp}.jpg")
-                        debug_webcam = Image.frombytes(webcam_mode, webcam_size, webcam_bytes)
-                        debug_webcam.save(webcam_path)
-                        logger.debug(f"💾 Webcam saved to: {webcam_path}")
+                    webcam_path = os.path.join(webcam_dir, f"webcam_{timestamp}.jpg")
+                    debug_webcam = Image.frombytes(webcam_mode, webcam_size, webcam_bytes)
+                    debug_webcam.save(webcam_path)
+                    logger.debug(f"💾 Webcam saved to: {webcam_path}")
                 except Exception as e:
-                    logger.warning(f"Failed to save debug images: {e}")
+                    logger.warning(f"Failed to save debug image: {e}")
                 
-                # Remove any old images from context
-                logger.debug("Removing old images from context...")
+                # Remove any old webcam images from context
+                logger.debug("Removing old webcam images from context...")
                 self._remove_old_images()
                 logger.debug("Old images removed")
                 
                 # Log context state before adding
-                logger.debug(f"Context has {len(self._context._messages)} messages before adding images")
+                logger.debug(f"Context has {len(self._context._messages)} messages before adding webcam")
                 
-                # Add the screenshot to context
-                logger.debug(f"Adding screenshot: size={screenshot_size}, mode={screenshot_mode}")
+                # Add the webcam image to context
+                logger.debug(f"Adding webcam image: size={webcam_size}, mode={webcam_mode}")
                 self._context.add_image_frame_message(
-                    image=screenshot_bytes,
-                    text=f"{self._screenshot_marker} Current screen view",
-                    size=screenshot_size,
-                    format=screenshot_mode,
+                    image=webcam_bytes,
+                    text=f"{self._webcam_marker} User webcam view",
+                    size=webcam_size,
+                    format=webcam_mode,
                 )
                 
-                # Add the webcam image to context if available
-                if webcam_result:
-                    logger.debug(f"Adding webcam image: size={webcam_size}, mode={webcam_mode}")
-                    self._context.add_image_frame_message(
-                        image=webcam_bytes,
-                        text=f"{self._webcam_marker} User webcam view",
-                        size=webcam_size,
-                        format=webcam_mode,
-                    )
-                
-                logger.debug(f"Context now has {len(self._context._messages)} messages after adding images")
-                logger.info(f"✅ Images added to context (screenshot: {screenshot_size}, webcam: {webcam_size if webcam_result else 'N/A'})")
+                logger.debug(f"Context now has {len(self._context._messages)} messages after adding webcam")
+                logger.info(f"✅ Webcam image added to context: {webcam_size}")
                 
             except Exception as e:
-                logger.error(f"❌ Failed to capture images: {e}")
+                logger.error(f"❌ Failed to capture webcam: {e}")
                 logger.exception("Full traceback:")
         
         # Always push frames through to maintain pipeline flow
@@ -319,6 +272,7 @@ logger.add(sys.stderr, level="DEBUG")
 def save_conversation(context: LLMContext) -> str:
     """
     Save the conversation history to the persistent JSON file.
+    Filters out image data (image_url type) to keep the file size manageable.
     
     Args:
         context: The LLMContext containing conversation messages
@@ -332,11 +286,35 @@ def save_conversation(context: LLMContext) -> str:
     logger.info(f"Saving conversation to {CONVERSATION_FILE}")
     
     try:
+        # LLMContext stores messages in '_messages' private attribute
+        messages = context._messages
+        
+        # Filter out image data from messages to reduce file size
+        filtered_messages = []
+        for msg in messages:
+            filtered_msg = msg.copy()
+            
+            # Check if content is a list (multimodal content)
+            if isinstance(msg.get("content"), list):
+                # Filter out image_url type content items
+                filtered_content = [
+                    item for item in msg["content"]
+                    if not (isinstance(item, dict) and item.get("type") == "image_url")
+                ]
+                
+                # If all content was filtered out, skip this message entirely
+                if not filtered_content:
+                    logger.debug(f"Skipping message with only image content")
+                    continue
+                    
+                filtered_msg["content"] = filtered_content
+            
+            filtered_messages.append(filtered_msg)
+        
         with open(CONVERSATION_FILE, "w") as file:
-            # LLMContext stores messages in '_messages' private attribute
-            messages = context._messages
-            json.dump(messages, file, indent=2)
-        logger.info(f"Successfully saved conversation to {CONVERSATION_FILE}")
+            json.dump(filtered_messages, file, indent=2)
+        
+        logger.info(f"Successfully saved conversation to {CONVERSATION_FILE} ({len(filtered_messages)} messages, images filtered out)")
         return CONVERSATION_FILE
     except Exception as e:
         logger.error(f"Failed to save conversation: {e}")
@@ -381,28 +359,38 @@ async def run_bot(transport: LocalAudioTransport):
     """
     logger.info("Starting conversational AI bot with local audio transport")
 
+    # Load configuration first
+    config = load_config()
+    
     # Initialize AssemblyAI STT service for speech-to-text
     stt = AssemblyAISTTService(
         api_key=os.getenv("ASSEMBLYAI_API_KEY"),
     )
 
-    # Initialize OpenRouter LLM service for AI responses
+    # Initialize OpenRouter LLM service for AI responses with config values
+    llm_config = config.get("llm", {})
     llm = OpenRouterLLMService(
         api_key=os.getenv("OPENROUTER_API_KEY"),
-        model="anthropic/claude-haiku-4.5",
+        model=llm_config.get("model", "anthropic/claude-haiku-4.5"),
     )
 
-    # Initialize ElevenLabs TTS service for audio output
+    # Initialize ElevenLabs TTS service for audio output with config values
+    elevenlabs_config = config.get("elevenlabs", {})
     tts = ElevenLabsTTSService(
         api_key=os.getenv("ELEVENLABS_API_KEY"),
-        voice_id="FM4U7dtcVAjQuuSwraJ0",  # Specified voice ID
+        voice_id=elevenlabs_config.get("voice_id", "mNeKLtUk8yWjz7uDi1dj"),
+        stability=elevenlabs_config.get("stability", 0.5),
+        similarity_boost=elevenlabs_config.get("similarity_boost", 0.75),
     )
 
-    # Create LLM context with system message that includes vision capability
+    # Get system prompt from config
+    system_prompt = config.get("system_prompt", "You are a helpful assistant.")
+    
+    # Create LLM context with system message from config
     messages = [
         {
             "role": "system",
-            "content": "Your name is JARVIS. Your current developer is BOOTOSHI the blasian with curly hair",
+            "content": system_prompt,
         },
     ]
     context = LLMContext(messages)
@@ -416,14 +404,23 @@ async def run_bot(transport: LocalAudioTransport):
     # Initialize processors for logging and image capture
     transcription_logger = TranscriptionLogger()
     llm_response_logger = LLMResponseLogger()
-    image_capture_processor = ImageCaptureProcessor(context)  # Captures screenshot + webcam, adds to context
+    image_capture_processor = ImageCaptureProcessor(context)  # Captures webcam, adds to context
+    
+    # 🔇 Configure STT mute filter to prevent processing user input while bot is speaking
+    # Using ALWAYS strategy to mute user input during all bot speech instances
+    stt_mute_processor = STTMuteFilter(
+        config=STTMuteConfig(
+            strategies={STTMuteStrategy.ALWAYS}
+        ),
+    )
 
     # Create pipeline with image capture before context aggregation
     pipeline = Pipeline([
         transport.input(),              # Receives audio from microphone
         stt,                            # Converts audio to text
+        stt_mute_processor,             # 🔇 Mute user input while bot is speaking
         transcription_logger,           # Logs the transcribed text
-        image_capture_processor,        # Captures screen + webcam, adds to context (before aggregation)
+        image_capture_processor,        # Captures webcam, adds to context (before aggregation)
         context_aggregator.user(),      # Aggregates user context for LLM
         llm,                            # Processes text and generates AI response
         tts,                            # Converts LLM text to speech
@@ -435,8 +432,14 @@ async def run_bot(transport: LocalAudioTransport):
     # Create Whisker observer for pipeline monitoring
     whisker = WhiskerObserver(pipeline)
 
-    # Create pipeline task with Whisker observer
-    task = PipelineTask(pipeline, observers=[whisker])
+    # Create pipeline params with interruptions disabled
+    # This prevents user speech from interrupting the bot while it's speaking
+    params = PipelineParams(
+        allow_interruptions=False,
+    )
+
+    # Create pipeline task with Whisker observer and params
+    task = PipelineTask(pipeline, params=params, observers=[whisker])
 
     # Create pipeline runner with signal handling
     runner = PipelineRunner(handle_sigint=True)
@@ -480,8 +483,6 @@ async def main():
         LocalAudioTransportParams(
             audio_in_enabled=True,                                        # Enable microphone input
             audio_out_enabled=True,                                       # Enable speaker output
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),  # Voice activity detection
-            turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),  # Interruptible turn detection
         )
     )
 
