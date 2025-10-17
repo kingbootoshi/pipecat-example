@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
+import base64
+import io
 
 import cv2
 from PIL import Image
@@ -30,6 +32,10 @@ class ImageCaptureProcessor(FrameProcessor):
                 logger.error("❌ Could not open webcam")
                 self._webcam = None
             else:
+                # Request 480p (16:9) to balance quality and size.
+                # Some cameras may ignore these; we will still rescale after capture.
+                self._webcam.set(cv2.CAP_PROP_FRAME_WIDTH, 854)
+                self._webcam.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                 width = int(self._webcam.get(cv2.CAP_PROP_FRAME_WIDTH))
                 height = int(self._webcam.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 logger.info(f"✅ Webcam initialized: {width}x{height}")
@@ -50,8 +56,29 @@ class ImageCaptureProcessor(FrameProcessor):
 
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             img = Image.fromarray(frame_rgb)
-            raw_bytes = img.tobytes()
-            return raw_bytes, img.size, img.mode
+
+            # Resize to 480p height (maintain aspect ratio).
+            TARGET_HEIGHT = 480
+            w, h = img.size
+            scale = min(TARGET_HEIGHT / h, 1.0)
+            if scale < 1.0:
+                new_size = (max(1, int(w * scale)), TARGET_HEIGHT)
+                img = img.resize(new_size, Image.BILINEAR)
+
+            # Encode as highly-compressed JPEG bytes.
+            buf = io.BytesIO()
+            img.save(
+                buf,
+                format="JPEG",
+                quality=40,            # better quality but still small
+                optimize=True,
+                progressive=True,
+                subsampling=2,         # 4:2:0 chroma subsampling
+            )
+            jpeg_bytes = buf.getvalue()
+
+            # Also return resized size for logging/debugging
+            return jpeg_bytes, img.size, "JPEG"
         except Exception as e:
             logger.error(f"❌ Error capturing webcam photo: {e}")
             return None
@@ -104,31 +131,37 @@ class ImageCaptureProcessor(FrameProcessor):
                     await self.push_frame(frame, direction)
                     return
 
-                webcam_bytes, webcam_size, webcam_mode = webcam_result
+                webcam_bytes, webcam_size, webcam_format = webcam_result
 
                 os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
                 try:
-                    webcam_path = os.path.join(
-                        SCREENSHOTS_DIR, f"webcam_{timestamp}.jpg"
+                    webcam_path = os.path.join(SCREENSHOTS_DIR, f"webcam_{timestamp}.jpg")
+                    with open(webcam_path, "wb") as f:
+                        f.write(webcam_bytes)
+                    logger.debug(
+                        f"💾 Webcam saved to: {webcam_path} ({webcam_size[0]}x{webcam_size[1]}, {len(webcam_bytes)} bytes)"
                     )
-                    debug_webcam = Image.frombytes(
-                        webcam_mode, webcam_size, webcam_bytes
-                    )
-                    debug_webcam.save(webcam_path)
-                    logger.debug(f"💾 Webcam saved to: {webcam_path}")
                 except Exception as e:
                     logger.warning(f"Failed to save debug image: {e}")
 
                 self._remove_old_images()
 
-                self._context.add_image_frame_message(
-                    image=webcam_bytes,
-                    text=f"{self._webcam_marker} User webcam view",
-                    size=webcam_size,
-                    format=webcam_mode,
+                # Build a data URL so we can control JPEG quality/size.
+                data_url = "data:image/jpeg;base64," + base64.b64encode(webcam_bytes).decode("utf-8")
+
+                self._context.add_message(
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": f"{self._webcam_marker} User webcam view"},
+                            {"type": "image_url", "image_url": {"url": data_url}},
+                        ],
+                    }
                 )
 
-                logger.info(f"✅ Webcam image added to context: {webcam_size}")
+                logger.info(
+                    f"✅ Webcam image added to context: {webcam_size[0]}x{webcam_size[1]} ~{len(webcam_bytes)} bytes"
+                )
             except Exception as e:
                 logger.error(f"❌ Failed to capture webcam: {e}")
 
