@@ -14,3 +14,12 @@ dependencies = [
     "pillow>=11.0.0",
     "opencv-python>=4.10.0",
 ]
+
+[project.scripts]
+voice-agent = "voice_agent.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
