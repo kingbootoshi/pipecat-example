@@ -13,6 +13,7 @@ from ..processors.llm_response_logger import LLMResponseLogger
 from ..processors.image_capture import ImageCaptureProcessor
 from ..processors.filters import make_stt_mute_filter_always
 from ..processors.mic_gate import MicGate
+from ..processors.unitree_led import UnitreeLEDProcessor
 from ..state import SharedState
 
 
@@ -49,12 +50,16 @@ def build_pipeline(
 
     mic_gate = MicGate(_should_allow)
 
+    # LED processor reacts to state; place early for StartFrame handling
+    led = UnitreeLEDProcessor(state)
+
     processors_pre_agg: list[Any] = [
         transport.input(),
         mic_gate,
         stt,
         stt_mute_processor,
         transcription_logger,
+        led,
     ]
 
     if enable_vision:
@@ -77,6 +82,7 @@ def build_pipeline(
         "llm_response_logger": llm_response_logger,
         "stt_mute_processor": stt_mute_processor,
         "mic_gate": mic_gate,
+        "unitree_led": led,
     }
 
 

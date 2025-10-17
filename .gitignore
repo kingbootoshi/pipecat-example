@@ -14,3 +14,5 @@ uv.lock
 # Application data directories
 conversations/
 screenshots/
+
+unitree_sdk2_python/
