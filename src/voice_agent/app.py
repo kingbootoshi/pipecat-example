@@ -12,12 +12,14 @@ from .logging import setup_logging, logger
 from .memory.conversation_store import load_conversation, save_conversation
 from .observers.whisker import make_whisker_observer
 from .pipeline.builder import build_pipeline
+from .pipeline.handlers import register_handlers
 from .pipeline.params import make_params
 from .services.llm import make_llm
 from .services.stt import make_stt
 from .services.tts import make_tts
 from .settings import load_env, missing_required_keys
 from .transports.local_audio import make_local_audio_transport
+from .state import SharedState
 
 
 class VoiceAgent:
@@ -70,6 +72,14 @@ class VoiceAgent:
             audio_in_enabled=True, audio_out_enabled=True
         )
 
+        # Shared state used by MicGate and TTS handlers
+        self._state = SharedState()
+        # make it discoverable by the builder (lazy, module-level singleton)
+        try:
+            SharedState._singleton = self._state  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
         # Pipeline
         self._pipeline, self._aggregator, _ = build_pipeline(
             transport=self._transport,
@@ -85,9 +95,9 @@ class VoiceAgent:
 
         # Params and base task (without Whisker)
         self._params = make_params(allow_interruptions=allow_interruptions)
-        self._task = PipelineTask(
-            self._pipeline, params=self._params, observers=self._observers
-        )
+        self._task = PipelineTask(self._pipeline, params=self._params, observers=self._observers)
+        # Attach minimal handlers on the base task (for non-serve mode)
+        register_handlers(self._task, self._state)
         # Runner will be created inside start() when an event loop is running
         self._runner: Optional[PipelineRunner] = None
 
@@ -109,6 +119,9 @@ class VoiceAgent:
     def get_context(self) -> LLMContext:
         return self._context
 
+    def get_state(self) -> SharedState:
+        return self._state
+
     async def start(self) -> None:
         logger.info("Starting VoiceAgent")
         try:
@@ -120,6 +133,8 @@ class VoiceAgent:
             task = PipelineTask(
                 self._pipeline, params=self._params, observers=dynamic_observers
             )
+            # Ensure handlers are attached to the dynamic task as well
+            register_handlers(task, self._state)
             # Create runner bound to the current running loop
             self._runner = PipelineRunner(handle_sigint=True)
             await self._runner.run(task)

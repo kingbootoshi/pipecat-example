@@ -4,6 +4,7 @@ import argparse
 import asyncio
 
 from .app import VoiceAgent
+from .serve import serve as serve_both
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -23,6 +24,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default="DEBUG",
         help="Logging level (DEBUG, INFO, WARNING, ERROR)",
     )
+    p.add_argument(
+        "--no-serve",
+        action="store_true",
+        help="Run pipeline only (skip web controller)",
+    )
+    p.add_argument("--host", type=str, default="127.0.0.1", help="Controller host")
+    p.add_argument("--port", type=int, default=8710, help="Controller port")
     return p
 
 
@@ -38,8 +46,10 @@ def main() -> None:
         log_level=args.log_level,
     )
 
-    asyncio.run(agent.start())
+    if args.no_serve:
+        asyncio.run(agent.start())
+    else:
+        asyncio.run(serve_both(agent, host=args.host, port=args.port))
 
 
 __all__ = ["main"]
-
