@@ -9,10 +9,13 @@ dependencies = [
     "pipecat-ai-whisker>=0.0.10",
     "pipecat-ai[assemblyai,elevenlabs,local,local-smart-turn-v3,openrouter]>=0.0.90",
     "python-dotenv>=1.1.1",
+    "fastapi>=0.115.0",
     "uvicorn>=0.37.0",
     "mss>=10.0.0",
     "pillow>=11.0.0",
     "opencv-python>=4.10.0",
+    "openpipe>=0.1.18",
+    "pytest>=8.3.3",
 ]
 
 [project.scripts]
