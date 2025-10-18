@@ -20,6 +20,7 @@ from .services.tts import make_tts
 from .settings import load_env, missing_required_keys
 from .transports.local_audio import make_local_audio_transport
 from .state import SharedState
+from .sfx import SFXManager
 
 
 class VoiceAgent:
@@ -59,6 +60,8 @@ class VoiceAgent:
             ]
         )
 
+        self._memory_enabled = memory
+
         if memory:
             load_conversation(self._context)
 
@@ -80,6 +83,8 @@ class VoiceAgent:
         except Exception:
             pass
 
+        self._sfx = SFXManager(state=self._state, transport=self._transport)
+
         # Pipeline
         self._pipeline, self._aggregator, _ = build_pipeline(
             transport=self._transport,
@@ -88,6 +93,7 @@ class VoiceAgent:
             tts=self._tts,
             context=self._context,
             enable_vision=vision,
+            enable_memory_autosave=self._memory_enabled,
         )
 
         # Observers (defer Whisker creation until start())
@@ -101,7 +107,6 @@ class VoiceAgent:
         # Runner will be created inside start() when an event loop is running
         self._runner: Optional[PipelineRunner] = None
 
-        self._memory_enabled = memory
         self._run_task: Optional[asyncio.Task] = None
 
     def build_task(
@@ -122,6 +127,9 @@ class VoiceAgent:
     def get_state(self) -> SharedState:
         return self._state
 
+    def get_sfx_manager(self) -> SFXManager:
+        return self._sfx
+
     async def start(self) -> None:
         logger.info("Starting VoiceAgent")
         try:
@@ -139,6 +147,10 @@ class VoiceAgent:
             self._runner = PipelineRunner(handle_sigint=True)
             await self._runner.run(task)
         finally:
+            try:
+                await self._sfx.stop()
+            except Exception as e:
+                logger.debug(f"Failed to stop SFX manager cleanly: {e}")
             if self._memory_enabled:
                 try:
                     saved_file = save_conversation(self._context)

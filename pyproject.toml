@@ -8,6 +8,7 @@ dependencies = [
     "pipecat-ai-small-webrtc-prebuilt>=1.0.0",
     "pipecat-ai-whisker>=0.0.10",
     "pipecat-ai[assemblyai,elevenlabs,local,local-smart-turn-v3,openrouter]>=0.0.90",
+    "pydub>=0.25.1",
     "python-dotenv>=1.1.1",
     "fastapi>=0.115.0",
     "uvicorn>=0.37.0",

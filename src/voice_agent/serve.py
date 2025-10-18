@@ -25,7 +25,7 @@ async def serve(agent: VoiceAgent, host: str = "127.0.0.1", port: int = 8710) ->
 
     runner = PipelineRunner(handle_sigint=True)
 
-    api = create_api(agent.get_state())
+    api = create_api(agent.get_state(), agent.get_sfx_manager())
 
     server_task = asyncio.create_task(run_http_server(api, host=host, port=port))
     pipeline_task = asyncio.create_task(runner.run(task))

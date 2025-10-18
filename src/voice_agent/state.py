@@ -11,12 +11,14 @@ StateListener = Callable[[str, Any], None]
 class SharedState:
     """Mutable app state with simple change notifications.
 
-    Tracks whether the mic should be listening (`listening`) and whether the
-    TTS is currently speaking (`tts_speaking`).
+    Tracks whether the mic should be listening (`listening`), whether the
+    TTS is currently speaking (`tts_speaking`), and whether recording is
+    force-muted (`force_muted`).
     """
 
     listening: bool = True
     tts_speaking: bool = False
+    force_muted: bool = False
 
     _listeners: List[StateListener] = field(default_factory=list)
 
@@ -42,6 +44,12 @@ class SharedState:
         if value != self.tts_speaking:
             self.tts_speaking = value
             self._notify("tts_speaking_changed", self.tts_speaking)
+
+    def set_force_muted(self, value: bool) -> None:
+        value = bool(value)
+        if value != self.force_muted:
+            self.force_muted = value
+            self._notify("force_muted_changed", self.force_muted)
 
 
 __all__ = ["SharedState", "StateListener"]

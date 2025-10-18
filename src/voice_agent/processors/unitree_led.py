@@ -36,8 +36,15 @@ class _UnitreeLEDClient:
         self._iface = iface or os.getenv("UNITREE_INTERFACE")
         self._sim = True
         self._client = None
+        # Check if we're in development mode to force simulation
+        self._force_sim = os.getenv("DEV", "").lower() in ("true", "1", "yes")
 
     def init(self) -> None:
+        # Force simulation mode if DEV=true
+        if self._force_sim:
+            logger.info("[UnitreeLED] DEV mode enabled, running in simulation")
+            self._sim = True
+            return
         if not HAS_UNITREE:
             logger.debug(f"[UnitreeLED] SDK not available, simulating: {IMPORT_ERR}")
             self._sim = True

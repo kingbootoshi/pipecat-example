@@ -8,6 +8,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
 )
 
+from ..processors.conversation_autosave import ConversationAutosaveProcessor
 from ..processors.transcription_logger import TranscriptionLogger
 from ..processors.llm_response_logger import LLMResponseLogger
 from ..processors.image_capture import ImageCaptureProcessor
@@ -25,6 +26,7 @@ def build_pipeline(
     tts,
     context: LLMContext,
     enable_vision: bool = True,
+    enable_memory_autosave: bool = True,
 ) -> tuple[Pipeline, LLMContextAggregatorPair, dict[str, Any]]:
     context_aggregator = LLMContextAggregatorPair(context)
 
@@ -45,7 +47,11 @@ def build_pipeline(
 
     def _should_allow() -> bool:
         if isinstance(state, SharedState):
-            return bool(state.listening) and not bool(state.tts_speaking)
+            return (
+                bool(state.listening)
+                and not bool(state.tts_speaking)
+                and not bool(state.force_muted)
+            )
         return True
 
     mic_gate = MicGate(_should_allow)
@@ -65,17 +71,28 @@ def build_pipeline(
     if enable_vision:
         processors_pre_agg.append(ImageCaptureProcessor(context))
 
-    pipeline = Pipeline(
-        processors_pre_agg
-        + [
-            context_aggregator.user(),
-            llm,
-            tts,
-            transport.output(),
-            context_aggregator.assistant(),
-            llm_response_logger,
-        ]
-    )
+    user_autosave: ConversationAutosaveProcessor | None = None
+    assistant_autosave: ConversationAutosaveProcessor | None = None
+    if enable_memory_autosave:
+        user_autosave = ConversationAutosaveProcessor(context, label="user")
+        assistant_autosave = ConversationAutosaveProcessor(context, label="assistant")
+
+    pipeline_processors: list[Any] = processors_pre_agg + [context_aggregator.user()]
+
+    if user_autosave:
+        pipeline_processors.append(user_autosave)
+
+    pipeline_processors.append(llm)
+    pipeline_processors.append(tts)
+    pipeline_processors.append(transport.output())
+    pipeline_processors.append(context_aggregator.assistant())
+
+    if assistant_autosave:
+        pipeline_processors.append(assistant_autosave)
+
+    pipeline_processors.append(llm_response_logger)
+
+    pipeline = Pipeline(pipeline_processors)
 
     return pipeline, context_aggregator, {
         "transcription_logger": transcription_logger,
@@ -83,6 +100,8 @@ def build_pipeline(
         "stt_mute_processor": stt_mute_processor,
         "mic_gate": mic_gate,
         "unitree_led": led,
+        "conversation_autosave_user": user_autosave,
+        "conversation_autosave_assistant": assistant_autosave,
     }
 
 
