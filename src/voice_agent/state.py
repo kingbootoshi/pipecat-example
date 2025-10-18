@@ -15,7 +15,7 @@ class SharedState:
     TTS is currently speaking (`tts_speaking`).
     """
 
-    listening: bool = False
+    listening: bool = True
     tts_speaking: bool = False
 
     _listeners: List[StateListener] = field(default_factory=list)
@@ -45,4 +45,3 @@ class SharedState:
 
 
 __all__ = ["SharedState", "StateListener"]
-

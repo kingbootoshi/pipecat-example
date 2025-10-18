@@ -124,11 +124,6 @@ class UnitreeLEDProcessor(FrameProcessor):
         self._stop = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
         self._last_set: Optional[Color] = None
-        self._last_apply_ts: float = 0.0
-        try:
-            self._keepalive_secs = float(os.getenv("UNITREE_LED_KEEPALIVE_SECS", "2.0"))
-        except Exception:
-            self._keepalive_secs = 2.0
         self._blink_on = False
         self._blink_t0 = time.monotonic()
 
@@ -176,11 +171,9 @@ class UnitreeLEDProcessor(FrameProcessor):
         while not self._stop.is_set():
             try:
                 target = self._compute_target()
+                # Only apply when color actually changes
                 if target != self._last_set:
                     self._apply(target)
-                # Periodic keepalive to prevent hardware reverting to default
-                elif (time.monotonic() - self._last_apply_ts) >= self._keepalive_secs:
-                    self._apply(self._last_set or target)
             except Exception as exc:
                 logger.debug(f"[UnitreeLED] loop error: {exc}")
             await asyncio.sleep(self._tick)
@@ -191,7 +184,6 @@ class UnitreeLEDProcessor(FrameProcessor):
         logger.debug(f"[UnitreeLED] apply RGB ({r},{g},{b})")
         self._led.set_color(r, g, b)
         self._last_set = color
-        self._last_apply_ts = time.monotonic()
 
 
 __all__ = ["UnitreeLEDProcessor"]

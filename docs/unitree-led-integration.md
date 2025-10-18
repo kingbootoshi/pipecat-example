@@ -7,7 +7,7 @@ This doc explains how we control the Unitree G1 LEDs from the Pipecat voice agen
 - SDK: We use Unitree SDK2 Python (`unitree_sdk2py`). LEDs are controlled via `AudioClient.LedControl(R,G,B)`.
 - Transport: SDK talks over DDS. We must initialize a DDS domain on the NIC that routes to the robot.
 - App behavior:
-  - At startup, LEDs are set to solid pink and kept there with a keepalive.
+  - At startup, LEDs are set to solid pink.
   - While the bot is speaking, LEDs blink pink ↔ dim pink (fast).
   - After speaking, they return to solid pink.
 
@@ -73,12 +73,10 @@ Defaults (can be overridden by env vars):
 - Pink color: `RGB(255,10,10)` (hardware-verified pink)
 - Blink frequency: `UNITREE_LED_HZ=4.0` (Hz)
 - Dim level (off-phase): `UNITREE_LED_DIM=0.15` (15%)
-- Keepalive refresh: `UNITREE_LED_KEEPALIVE_SECS=2.0`
 
 Example overrides:
 - Faster blink: `UNITREE_LED_HZ=6.0 UNITREE_INTERFACE=en13 uv run voice-agent`
 - Less dim (more visible off-phase): `UNITREE_LED_DIM=0.25 ...`
-- Aggressive keepalive: `UNITREE_LED_KEEPALIVE_SECS=1.0 ...`
 
 ## Test tools
 
@@ -109,13 +107,20 @@ This logic lives in `src/voice_agent/pipeline/handlers.py`. The LED processor su
 
 - `UnitreeLEDProcessor` is a `FrameProcessor` that:
   - Initializes DDS/AudioClient on `StartFrame` using `UNITREE_INTERFACE`.
-  - Applies baseline pink immediately and maintains it (keepalive) while not speaking.
+  - Applies baseline pink immediately when starting.
   - While speaking, blinks between bright pink and dim pink at the configured frequency.
+  - LED color is only updated when it actually changes (no constant re-application).
   - Always forwards frames; it never blocks the pipeline.
 
 - We position the processor early so it receives Start/Stop lifecycle frames. It does not depend on transport output placement because speaking state comes from handlers.
 
 ## Troubleshooting
+
+- `[ClientStub] send request error. id: ...`
+  - This error comes from the Unitree SDK's internal DDS client when it cannot reach the robot hardware.
+  - Cause: Wrong network interface (`UNITREE_INTERFACE`) or robot is not reachable on the network.
+  - Solution: Verify you're using the correct interface (e.g., `en13` instead of `en0`) and that the robot is powered on and connected.
+  - When the correct interface is used, you should see LED commands succeed without these errors.
 
 - `No module named 'unitree_sdk2py'`
   - Install the SDK into uv: `uv pip install -e ./unitree_sdk2_python`
@@ -123,9 +128,6 @@ This logic lives in `src/voice_agent/pipeline/handlers.py`. The LED processor su
 
 - `No module named 'cyclonedds'`
   - Install Cyclone DDS on macOS (or run on the robot); then retry.
-
-- LED flashes once then reverts
-  - The keepalive periodically re-applies the color; adjust with `UNITREE_LED_KEEPALIVE_SECS=1.0`.
 
 - Blink looks white/blue
   - Use explicit pink and increase `UNITREE_LED_DIM` (e.g., 0.25–0.6) if dimming shifts hue on your hardware.
