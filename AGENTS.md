@@ -1,6 +1,6 @@
 ## QUICK START
 
-Read DEVELOPER_GUIDE.md to understand how the codebase works when starting from scratch with no context
+Read DEVELOPER_GUIDE.md to understand how the codebase works when starting from scratch with no context 
 
 ## TOOLS
 - Use exa code search tool to ensure you are using the most up-to-date accurate code during your plans before coding

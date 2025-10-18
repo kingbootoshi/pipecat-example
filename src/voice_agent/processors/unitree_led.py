@@ -33,7 +33,7 @@ class _UnitreeLEDClient:
     """
 
     def __init__(self, iface: str | None) -> None:
-        self._iface = iface or os.getenv("UNITREE_INTERFACE", "en0")
+        self._iface = iface or os.getenv("UNITREE_INTERFACE")
         self._sim = True
         self._client = None
 
