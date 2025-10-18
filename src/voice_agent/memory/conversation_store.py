@@ -1,20 +1,28 @@
 from __future__ import annotations
 
 import json
-import os
+from pathlib import Path
 from typing import Any
 
-from ..constants import CONVERSATION_FILE, CONVERSATIONS_DIR, WEBCAM_MARKER
+from ..constants import CONVERSATION_FILE, WEBCAM_MARKER
 from ..logging import logger
 
 MAX_LOADED_MESSAGES = 100
 _ARCHIVED_MESSAGES: list[Any] = []
 
 
+def _conversation_path() -> Path:
+    path = Path(CONVERSATION_FILE).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path
+
+
 def save_conversation(context: Any) -> str:
     global _ARCHIVED_MESSAGES
-    os.makedirs(os.path.dirname(CONVERSATION_FILE), exist_ok=True)
-    logger.info(f"Saving conversation to {CONVERSATION_FILE}")
+    convo_path = _conversation_path()
+    convo_path.parent.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Saving conversation to {convo_path}")
 
     try:
         messages = getattr(context, "_messages", [])
@@ -49,11 +57,11 @@ def save_conversation(context: Any) -> str:
 
         full_history = [*_ARCHIVED_MESSAGES, *filtered_messages]
 
-        with open(CONVERSATION_FILE, "w") as f:
+        with open(convo_path, "w") as f:
             json.dump(full_history, f, indent=2)
 
         logger.info(
-            f"Successfully saved conversation to {CONVERSATION_FILE} "
+            f"Successfully saved conversation to {convo_path} "
             f"({len(full_history)} messages persisted, images filtered out)"
         )
 
@@ -62,7 +70,7 @@ def save_conversation(context: Any) -> str:
         else:
             _ARCHIVED_MESSAGES = []
 
-        return CONVERSATION_FILE
+        return str(convo_path)
     except Exception as e:
         logger.error(f"Failed to save conversation: {e}")
         raise
@@ -70,15 +78,16 @@ def save_conversation(context: Any) -> str:
 
 def load_conversation(context: Any) -> bool:
     global _ARCHIVED_MESSAGES
-    if not os.path.exists(CONVERSATION_FILE):
+    convo_path = _conversation_path()
+    if not convo_path.exists():
         logger.info("No existing conversation file found. Starting fresh.")
         _ARCHIVED_MESSAGES = []
         return False
 
-    logger.info(f"Loading conversation from {CONVERSATION_FILE}")
+    logger.info(f"Loading conversation from {convo_path}")
 
     try:
-        with open(CONVERSATION_FILE, "r") as f:
+        with open(convo_path, "r") as f:
             messages = json.load(f)
         total = len(messages) if isinstance(messages, list) else 0
         if total > MAX_LOADED_MESSAGES:
