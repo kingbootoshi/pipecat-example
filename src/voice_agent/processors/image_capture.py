@@ -112,10 +112,18 @@ class ImageCaptureProcessor(FrameProcessor):
                     return False
             return has_marker_text
 
-        if hasattr(self._context, "_messages"):
-            self._context._messages = [
-                msg for msg in self._context._messages if not _is_webcam_only_message(msg)
-            ]
+        messages = self._context.get_messages()
+        filtered_messages = []
+        changed = False
+
+        for message in messages:
+            if isinstance(message, dict) and _is_webcam_only_message(message):
+                changed = True
+                continue
+            filtered_messages.append(message)
+
+        if changed:
+            self._context.set_messages(filtered_messages)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
