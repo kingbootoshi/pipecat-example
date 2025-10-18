@@ -7,8 +7,12 @@ from typing import Any
 from ..constants import CONVERSATION_FILE, CONVERSATIONS_DIR, WEBCAM_MARKER
 from ..logging import logger
 
+MAX_LOADED_MESSAGES = 100
+_ARCHIVED_MESSAGES: list[Any] = []
+
 
 def save_conversation(context: Any) -> str:
+    global _ARCHIVED_MESSAGES
     os.makedirs(os.path.dirname(CONVERSATION_FILE), exist_ok=True)
     logger.info(f"Saving conversation to {CONVERSATION_FILE}")
 
@@ -43,13 +47,21 @@ def save_conversation(context: Any) -> str:
 
             filtered_messages.append(filtered_msg)
 
+        full_history = [*_ARCHIVED_MESSAGES, *filtered_messages]
+
         with open(CONVERSATION_FILE, "w") as f:
-            json.dump(filtered_messages, f, indent=2)
+            json.dump(full_history, f, indent=2)
 
         logger.info(
             f"Successfully saved conversation to {CONVERSATION_FILE} "
-            f"({len(filtered_messages)} messages, images filtered out)"
+            f"({len(full_history)} messages persisted, images filtered out)"
         )
+
+        if len(full_history) > MAX_LOADED_MESSAGES:
+            _ARCHIVED_MESSAGES = full_history[:-MAX_LOADED_MESSAGES]
+        else:
+            _ARCHIVED_MESSAGES = []
+
         return CONVERSATION_FILE
     except Exception as e:
         logger.error(f"Failed to save conversation: {e}")
@@ -57,8 +69,10 @@ def save_conversation(context: Any) -> str:
 
 
 def load_conversation(context: Any) -> bool:
+    global _ARCHIVED_MESSAGES
     if not os.path.exists(CONVERSATION_FILE):
         logger.info("No existing conversation file found. Starting fresh.")
+        _ARCHIVED_MESSAGES = []
         return False
 
     logger.info(f"Loading conversation from {CONVERSATION_FILE}")
@@ -66,8 +80,20 @@ def load_conversation(context: Any) -> bool:
     try:
         with open(CONVERSATION_FILE, "r") as f:
             messages = json.load(f)
-            setattr(context, "_messages", messages)
-        logger.info(f"Successfully loaded {len(messages)} messages from conversation history")
+        total = len(messages) if isinstance(messages, list) else 0
+        if total > MAX_LOADED_MESSAGES:
+            _ARCHIVED_MESSAGES = messages[:-MAX_LOADED_MESSAGES]
+            recent_messages = messages[-MAX_LOADED_MESSAGES:]
+            logger.info(
+                f"Loaded {MAX_LOADED_MESSAGES} most recent messages "
+                f"(total history {total}, older messages kept on disk)"
+            )
+        else:
+            _ARCHIVED_MESSAGES = []
+            recent_messages = messages
+            logger.info(f"Successfully loaded {total} messages from conversation history")
+
+        setattr(context, "_messages", recent_messages)
         return True
     except Exception as e:
         logger.error(f"Failed to load conversation: {e}")
